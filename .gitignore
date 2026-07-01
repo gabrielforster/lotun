@@ -1,0 +1,19 @@
+# Compiled binaries
+/lotun
+/lotund
+*.exe
+
+# Test / coverage output
+*.out
+coverage.*
+
+# Git worktrees for parallel development
+/.worktrees/
+
+# Local runtime config & data
+*.local.yaml
+lotund.yaml
+/data/
+
+# Implementation plans — intentionally NOT committed
+/plans/
