@@ -154,12 +154,18 @@ protocol:
 
 ## Self-hosting
 
-To run this for real on your own domain — wildcard DNS, a Caddyfile for wildcard
-TLS, firewall rules, and a full `lotund.yaml` — see
-[docs/deploy.md](docs/deploy.md).
+To run this for real on your own domain, follow the
+**[deployment guide](docs/deploy.md)** — it covers wildcard DNS, a Caddyfile for
+wildcard TLS, firewall rules, the full `lotund.yaml`, and running `lotund` as a
+systemd service.
+
+> **Control-channel note:** the bundled `lotun` CLI currently dials the control
+> port in plaintext. Over the public internet, protect it at the network layer
+> (WireGuard/Tailscale/SSH tunnel) rather than exposing `7000` directly — see
+> [Control-channel security](docs/deploy.md#control-channel-security).
 
 ## Documentation
 
-- [docs/deploy.md](docs/deploy.md) — production self-hosting guide.
+- [docs/deploy.md](docs/deploy.md) — production self-hosting guide: DNS, Caddy, firewall, `lotund.yaml`, systemd, and control-channel security.
 - [docs/protocol.md](docs/protocol.md) — control-channel and data-stream wire format.
 - [docs/DESIGN.md](docs/DESIGN.md) — architecture and design decisions.
