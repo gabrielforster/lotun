@@ -18,7 +18,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func main() {
+// newRootCmd builds the lotund command: it loads the config named by --config
+// and hands it to run.
+func newRootCmd() *cobra.Command {
 	var configPath string
 
 	root := &cobra.Command{
@@ -35,6 +37,11 @@ func main() {
 		},
 	}
 	root.Flags().StringVar(&configPath, "config", "lotund.yaml", "path to config file")
+	return root
+}
+
+func main() {
+	root := newRootCmd()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -61,14 +68,14 @@ func run(ctx context.Context, cfg config.ServerConfig) error {
 		return fmt.Errorf("init server: %w", err)
 	}
 
-	errc := make(chan error, 1)
-	go func() { errc <- srv.Run(ctx) }()
+	// The listeners bind inside Run; poll for the resolved addresses (which
+	// matter when configured with :0) alongside it. Cancelling logCtx when Run
+	// returns stops the poll even if a listener never binds.
+	logCtx, stopLog := context.WithCancel(ctx)
+	defer stopLog()
+	go logBoundAddrs(logCtx, srv)
 
-	// The listeners bind inside Run; poll briefly so we can log the resolved
-	// addresses (which matter when configured with :0).
-	logBoundAddrs(ctx, srv)
-
-	return <-errc
+	return srv.Run(ctx)
 }
 
 // logBoundAddrs waits for the server's listeners to bind, then logs the bound
