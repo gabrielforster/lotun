@@ -66,7 +66,7 @@ whole path — including subdomain routing — without touching DNS.
    ```
 
    ```sh
-   go run ./cmd/lotund -config lotund.yaml
+   go run ./cmd/lotund --config lotund.yaml
    ```
 
 2. **Log in** (saves the server address and token to the client config) and

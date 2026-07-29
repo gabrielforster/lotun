@@ -140,7 +140,7 @@ All tests run under `go test -race ./...`.
 
 - `go test -race ./...` green; `go vet ./...` and `gofmt` clean.
 - Manual smoke (documented in README), using `lvh.me` (resolves `*.lvh.me`→127.0.0.1):
-  1. `go run ./cmd/lotund -config lotund.yaml` (plaintext control, base domain `lvh.me`).
+  1. `go run ./cmd/lotund --config lotund.yaml` (plaintext control, base domain `lvh.me`).
   2. `lotun login --server 127.0.0.1:7000 --token dev`, then `lotun http 8080` against `python -m http.server 8080`.
   3. `curl -H 'Host: <name>.lvh.me' http://127.0.0.1:80/` returns the local page.
   4. `lotun http 8080 --private` → prints a generated password; same curl → 401; with `-u lotun:<pw>` → 200.

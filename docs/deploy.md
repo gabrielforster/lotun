@@ -83,7 +83,7 @@ and keep the control port off the public internet entirely.
 
 ## 4. `lotund.yaml`
 
-`lotund` loads a YAML config (via `-config`), layering `LOTUND_`-prefixed
+`lotund` loads a YAML config (via `--config`), layering `LOTUND_`-prefixed
 environment variables and built-in defaults over it (e.g. `LOTUND_TOKEN`
 overrides `token`). A production config:
 
