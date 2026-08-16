@@ -91,9 +91,10 @@ Single-tenant, so "claim" reserves stable names and prevents random-assignment c
 
 ## CLI surface
 
-- `lotun login --server host:7000 --token TOKEN` — save server + token to client config.
+- `lotun login --server host:7000 --token TOKEN [--tls] [--tls-insecure]` — save server + token (and control-TLS settings) to client config.
 - `lotun http <port> [--domain name] [--private] [--password pw]`
 - `lotun tcp <port> [--domain name] [--remote-port N] [--private] [--allow-ip IP ...]`
+- `lotun serve` — register every tunnel in the client config's `tunnels:` list on one control session, reconnecting with backoff. The long-running/service form of the one-shot `http`/`tcp` commands.
 - `lotun claim <name>` / `lotun unclaim <name>`
 - `lotun status` — this client's active tunnels + public URLs.
 - `lotun version`.

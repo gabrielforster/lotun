@@ -98,9 +98,9 @@ base_domain: "yourdomain.com"
 # Control listener: where lotun clients connect.
 control_addr: ":7000"
 
-# Control-channel TLS. The bundled `lotun` CLI currently dials the control
-# port in PLAINTEXT, so leave these unset for now and protect the control port
-# at the network layer instead — see "Control-channel security" below.
+# Control-channel TLS. Set these when the control port is reachable from the
+# public internet; clients then log in with `--tls`. See "Control-channel
+# security" below.
 # control_tls_cert: "/etc/lotun/control.crt"
 # control_tls_key: "/etc/lotun/control.key"
 
@@ -122,7 +122,7 @@ Config fields (all keys are snake_case; env overrides use the `LOTUND_` prefix):
 | `token` | *(required)* | Shared auth token; compared in constant time. |
 | `base_domain` | *(required)* | Domain that tunnels are subdomains of. |
 | `control_addr` | `:7000` | Control listener address. |
-| `control_tls_cert` | `""` | Control-channel TLS cert. Leave empty — not usable from the current CLI (see [Control-channel security](#control-channel-security)). |
+| `control_tls_cert` | `""` | Control-channel TLS cert; empty means plaintext. Clients dial it with `lotun login --tls` (see [Control-channel security](#control-channel-security)). |
 | `control_tls_key` | `""` | Control-channel TLS key. |
 | `http_addr` | `:8000` | Public HTTP listener (front it with Caddy). |
 | `tcp_port_min` | `20000` | Lowest allocatable TCP tunnel port. |
@@ -134,25 +134,46 @@ Config fields (all keys are snake_case; env overrides use the `LOTUND_` prefix):
 ### Control-channel security
 
 The control channel is a direct connection between `lotun` clients and
-`control_addr` — it does **not** go through Caddy. The server can wrap it in TLS
-via `control_tls_cert`/`control_tls_key`, **but the bundled `lotun` CLI currently
-connects in plaintext**, so enabling server-side control TLS today would stop the
-CLI from connecting.
+`control_addr` — it does **not** go through Caddy. Everything rides it: the auth
+token, every registration, and all tunneled bytes. If the control port is
+reachable from the public internet, encrypt it.
 
-Until client-side TLS is wired up, secure the control port at the network layer.
-Pick one:
+**Option A — control TLS (recommended when the port is public).** Point
+`control_tls_cert`/`control_tls_key` at a certificate for the host clients dial,
+then have clients pass `--tls` at login:
 
-- **Private network (recommended):** run the control port on a WireGuard or
-  Tailscale interface and have clients dial that address. The token and all
-  tunneled bytes then ride an already-encrypted link, and you don't open `7000`
-  to the public internet at all.
+```sh
+lotun login --server yourdomain.com:7000 --token "a-long-random-secret" --tls
+```
+
+The certificate must be valid for the name in `--server`. A public certificate
+is the simplest path — reuse the one Caddy already obtains, or issue a
+dedicated one. For a self-signed or internal-CA certificate, either install the
+CA in the client's trust store or add `--tls-insecure`, which skips verification
+entirely:
+
+```sh
+lotun login --server yourdomain.com:7000 --token "..." --tls --tls-insecure
+```
+
+> `--tls-insecure` still encrypts the connection but accepts **any**
+> certificate, so it does not protect against an active man-in-the-middle. Use
+> it for a lab or a first run, not as a permanent setting.
+
+**Option B — keep the port off the public internet.** Just as good, and it
+avoids certificate management:
+
+- **Private network:** run the control port on a WireGuard or Tailscale
+  interface and have clients dial that address. The token and all tunneled
+  bytes then ride an already-encrypted link, and you don't open `7000` to the
+  public internet at all.
 - **SSH tunnel:** `ssh -L 7000:127.0.0.1:7000 you@yourdomain.com`, keep
   `control_addr` on `127.0.0.1:7000`, and `lotun login --server 127.0.0.1:7000`.
 - **Source-IP allowlist:** if your clients have stable IPs, restrict the control
   port in the firewall to just those addresses.
 
-The `control_tls_cert`/`control_tls_key` fields are reserved for when the client
-learns to speak TLS; leave them empty for now.
+What you must not do is expose `control_addr` publicly in plaintext — the shared
+token crosses it on every connection.
 
 ## 5. Run it as a service
 
@@ -193,9 +214,75 @@ journalctl -u lotund -f        # expect "control listening" and "http listening"
 Then point clients at the control port:
 
 ```sh
-lotun login --server yourdomain.com:7000 --token "a-long-random-secret"
+lotun login --server yourdomain.com:7000 --token "a-long-random-secret" --tls
 lotun http 8080
 ```
+
+## 6. Run the client as a service
+
+`lotun http`/`lotun tcp` are one-shot foreground commands: one tunnel, and the
+process ends if the control connection drops. For a machine that should stay
+exposed, declare the tunnels in the client config and run `lotun serve`, which
+registers them all on a single control session and reconnects on failure.
+
+```yaml
+# ~/.lotun/config.yaml — written by `lotun login`, tunnels added by hand
+control_addr: yourdomain.com:7000
+token: a-long-random-secret
+tls: true
+
+tunnels:
+  - type: http
+    domain: api          # must be claimed first: `lotun claim api`
+    port: 3000
+  - type: http
+    domain: admin
+    port: 4000
+    private: true        # Basic Auth; omit `password` to have one generated
+  - type: tcp
+    domain: db
+    port: 5432
+    remote_port: 25432   # must fall inside the server's tcp_port_min..max
+    private: true
+    allow_ips: ["203.0.113.7"]
+```
+
+The file holds the token and any tunnel passwords, so `lotun login` writes it
+`0600` inside a `0700` directory. Re-running `lotun login` keeps the `tunnels:`
+list intact.
+
+Supervise it with a systemd **user** unit —
+`~/.config/systemd/user/lotun.service`:
+
+```ini
+[Unit]
+Description=lotun tunnel client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/lotun serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user daemon-reload && systemctl --user enable --now lotun
+systemctl --user status lotun
+journalctl --user -u lotun -f     # one "Tunnel ready" line per tunnel
+loginctl enable-linger "$USER"    # keep it running when you are not logged in
+```
+
+`lotun serve` reconnects on its own with capped exponential backoff (1s doubling
+to 30s), so a `lotund` restart or a flaky link recovers without systemd getting
+involved. There is no reload signal: after editing `tunnels:`, restart the unit
+(`systemctl --user restart lotun`).
+
+Each tunnel needs its own subdomain, so `default_domain` is not applied to
+`tunnels:` entries — name each one with `domain:` (claim it first) or omit
+`domain:` to let the server assign a random name.
 
 ## Note: raw TCP tunnels bypass Caddy
 

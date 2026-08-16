@@ -121,9 +121,10 @@ whole path — including subdomain routing — without touching DNS.
 
 | Command | Flags | Description |
 | --- | --- | --- |
-| `lotun login` | `--server host:port`, `--token TOKEN` | Save server address and token to the client config (`~/.lotun/config.yaml`). |
+| `lotun login` | `--server host:port`, `--token TOKEN`, `--tls`, `--tls-insecure`, `--default-domain name` | Save server address and token to the client config (`~/.lotun/config.yaml`). |
 | `lotun http <port>` | `--domain name`, `--private`, `--password pw` | Expose local HTTP `<port>`. Public at `https://<name>.<base_domain>` (port 443 via Caddy). |
 | `lotun tcp <port>` | `--domain name`, `--remote-port N`, `--private`, `--allow-ip IP` (repeatable) | Expose local TCP `<port>`. Reachable at `<name>.<base_domain>:<remote-port>`. `--remote-port` defaults to the local port. |
+| `lotun serve` | | Serve every tunnel in the config's `tunnels:` list on one connection, reconnecting on failure. |
 | `lotun claim <name>` | | Reserve a stable subdomain name. |
 | `lotun unclaim <name>` | | Release a reserved subdomain name. |
 | `lotun status` | | List this client's active tunnels and their public URLs. |
@@ -138,6 +139,51 @@ Notes:
   natural port works for consumers (`lotun tcp 25565` → connect on `:25565`).
 - On tunnel start, `lotun http`/`lotun tcp` print the public URL (and a
   generated password, if any) and then run until you press Ctrl-C.
+- `lotun login --tls` dials the control port over TLS; add `--tls-insecure` for
+  a self-signed control certificate. Both are saved to the config, so later
+  commands pick them up.
+
+## Many tunnels from one process
+
+`lotun http`/`lotun tcp` expose one port each and exit when the connection
+drops. To keep a set of services exposed, declare them in the client config and
+run `lotun serve` — it registers them all over a single multiplexed connection
+and reconnects with backoff if the server restarts.
+
+```yaml
+# ~/.lotun/config.yaml
+control_addr: yourdomain.com:7000
+token: a-long-random-secret
+tls: true
+
+tunnels:
+  - type: http
+    domain: api          # claim it first: `lotun claim api`
+    port: 3000
+  - type: tcp
+    domain: db
+    port: 5432
+    remote_port: 25432
+    private: true
+    allow_ips: ["203.0.113.7"]
+```
+
+```sh
+lotun serve
+# Tunnel ready: https://api.yourdomain.com -> localhost:3000
+# Tunnel ready: db.yourdomain.com:25432 -> localhost:5432
+# Forwarding traffic. Press Ctrl-C to stop.
+```
+
+Per-entry keys mirror the flags: `type` (`http`/`tcp`), `domain`, `port` (local),
+`remote_port`, `private`, `password` (http only), `allow_ips` (tcp only). Each
+tunnel needs its own subdomain, so `default_domain` is not applied here — give
+each entry a `domain:` or omit it for a server-assigned name.
+
+The config carries the token and any passwords, so `lotun login` writes it `0600`
+inside a `0700` directory, and re-running `login` leaves `tunnels:` alone. For
+running this under systemd, see the
+[deployment guide](docs/deploy.md#6-run-the-client-as-a-service).
 
 ## Privacy model
 
@@ -159,9 +205,10 @@ To run this for real on your own domain, follow the
 wildcard TLS, firewall rules, the full `lotund.yaml`, and running `lotund` as a
 systemd service.
 
-> **Control-channel note:** the bundled `lotun` CLI currently dials the control
-> port in plaintext. Over the public internet, protect it at the network layer
-> (WireGuard/Tailscale/SSH tunnel) rather than exposing `7000` directly — see
+> **Control-channel note:** the control port carries the shared token, and it
+> is plaintext unless you configure it. Either set `control_tls_cert`/
+> `control_tls_key` on the server and log in with `--tls`, or keep the port off
+> the public internet (WireGuard/Tailscale/SSH tunnel) — see
 > [Control-channel security](docs/deploy.md#control-channel-security).
 
 ## Documentation
