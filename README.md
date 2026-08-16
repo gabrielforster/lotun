@@ -32,6 +32,10 @@ speaks plain HTTP on localhost and lets Caddy terminate wildcard TLS in front.
 See [docs/protocol.md](docs/protocol.md) for the wire format and
 [docs/DESIGN.md](docs/DESIGN.md) for the full architecture.
 
+New here? **[docs/guide.md](docs/guide.md)** walks the whole path end to end:
+install, host the server, expose ports, plus a config reference and
+troubleshooting table.
+
 ## Install
 
 Both commands live in this repo. Build them with the Go toolchain:
@@ -211,8 +215,35 @@ systemd service.
 > the public internet (WireGuard/Tailscale/SSH tunnel) — see
 > [Control-channel security](docs/deploy.md#control-channel-security).
 
+## Development
+
+```sh
+go build ./...
+go test -race ./...
+```
+
+`-race` matters here: the server multiplexes concurrent streams over shared
+registry state. The full suite is in-process — no Docker, no real DNS, no
+network — so it runs anywhere Go does.
+
+Before sending a change: `gofmt -l .` prints nothing, `go vet ./...` is clean,
+`go test -race ./...` is green. See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+package layout, testing approach, and commit conventions.
+
 ## Documentation
 
+- [docs/guide.md](docs/guide.md) — install, host, and use: the end-to-end walkthrough, config reference, and troubleshooting.
 - [docs/deploy.md](docs/deploy.md) — production self-hosting guide: DNS, Caddy, firewall, `lotund.yaml`, systemd, and control-channel security.
 - [docs/protocol.md](docs/protocol.md) — control-channel and data-stream wire format.
 - [docs/DESIGN.md](docs/DESIGN.md) — architecture and design decisions.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — building, testing, and contributing.
+
+## License
+
+Copyright (C) 2026 Gabriel Rocha.
+
+Licensed under the **[GNU Affero General Public License v3.0 or later](LICENSE)**.
+
+You can run, modify, and self-host this freely. The AGPL's network clause
+(section 13) is the point: if you run a modified `lotund` that users interact
+with over a network, those users must be able to get your modified source.

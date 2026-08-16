@@ -7,6 +7,9 @@ wildcard DNS, TLS via Caddy, firewall rules, and the server config.
 public TLS via a Caddy reverse proxy in front — `lotund` itself speaks plain
 HTTP on localhost.
 
+For the client side — installing, logging in, and exposing ports — see
+[guide.md](guide.md). This document is the server half.
+
 ## What gets exposed
 
 `lotund` opens three network surfaces; only the HTTP one goes through Caddy:
