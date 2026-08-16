@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/gabrielrocha/lotun/internal/client"
 	"github.com/gabrielrocha/lotun/internal/config"
@@ -40,10 +43,10 @@ func parsePort(s string) (int, error) {
 // rules are unit-testable without any networking.
 func validateTCPFlags(private bool, allowIPs []string, password string) error {
 	if password != "" {
-		return errors.New("--password is not valid for tcp: use --allow-ip for tcp privacy")
+		return errors.New("password is not valid for tcp: use allow_ips/--allow-ip for tcp privacy")
 	}
 	if private && len(allowIPs) == 0 {
-		return errors.New("--private tcp requires at least one --allow-ip")
+		return errors.New("a private tcp tunnel requires at least one allowed IP (allow_ips/--allow-ip)")
 	}
 	return nil
 }
@@ -76,7 +79,59 @@ func dial(c config.ClientConfig) (*client.Client, error) {
 	return client.Connect(client.Options{
 		ControlAddr: c.ControlAddr,
 		Token:       c.Token,
+		UseTLS:      c.TLS,
+		TLSInsecure: c.TLSInsecure,
 	})
+}
+
+// parseTunnelType maps a config `type:` value to a protocol tunnel type.
+func parseTunnelType(s string) (protocol.TunnelType, error) {
+	switch strings.ToLower(s) {
+	case string(protocol.HTTP):
+		return protocol.HTTP, nil
+	case string(protocol.TCP):
+		return protocol.TCP, nil
+	default:
+		return "", fmt.Errorf("invalid tunnel type %q: want %q or %q", s, protocol.HTTP, protocol.TCP)
+	}
+}
+
+// tunnelRequests converts the declarative `tunnels:` config into registration
+// requests, applying the same validation the http/tcp subcommands apply to
+// their flags. It is pure so the rules are unit-testable without networking.
+//
+// DefaultDomain is deliberately not applied here: it would give every tunnel in
+// the list the same subdomain, which the server rejects. Each entry names its
+// own domain or lets the server assign one.
+func tunnelRequests(tunnels []config.TunnelConfig) ([]client.TunnelRequest, error) {
+	if len(tunnels) == 0 {
+		return nil, errors.New("no tunnels configured: add a `tunnels:` list to the client config")
+	}
+	reqs := make([]client.TunnelRequest, 0, len(tunnels))
+	for i, t := range tunnels {
+		typ, err := parseTunnelType(t.Type)
+		if err != nil {
+			return nil, fmt.Errorf("tunnels[%d]: %w", i, err)
+		}
+		if t.Port < 1 || t.Port > 65535 {
+			return nil, fmt.Errorf("tunnels[%d]: invalid port %d: must be between 1 and 65535", i, t.Port)
+		}
+		if typ == protocol.TCP {
+			if err := validateTCPFlags(t.Private, t.AllowIPs, t.Password); err != nil {
+				return nil, fmt.Errorf("tunnels[%d]: %w", i, err)
+			}
+		}
+		reqs = append(reqs, client.TunnelRequest{
+			Type:       typ,
+			Domain:     t.Domain,
+			LocalPort:  t.Port,
+			RemotePort: t.RemotePort,
+			Private:    t.Private,
+			Password:   t.Password,
+			AllowIPs:   t.AllowIPs,
+		})
+	}
+	return reqs, nil
 }
 
 // newRootCmd builds the root command and wires all subcommands. The --config
@@ -96,6 +151,7 @@ func newRootCmd() *cobra.Command {
 		newLoginCmd(&cfgPath),
 		newHTTPCmd(&cfgPath),
 		newTCPCmd(&cfgPath),
+		newServeCmd(&cfgPath),
 		newClaimCmd(&cfgPath),
 		newUnclaimCmd(&cfgPath),
 		newStatusCmd(&cfgPath),
@@ -106,6 +162,7 @@ func newRootCmd() *cobra.Command {
 
 func newLoginCmd(cfgPath *string) *cobra.Command {
 	var server, token, defaultDomain string
+	var useTLS, tlsInsecure bool
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "Save server address and token to the client config",
@@ -114,10 +171,26 @@ func newLoginCmd(cfgPath *string) *cobra.Command {
 			if server == "" || token == "" {
 				return errors.New("both --server and --token are required")
 			}
-			c := config.ClientConfig{
-				ControlAddr:   server,
-				Token:         token,
-				DefaultDomain: defaultDomain,
+			if tlsInsecure && !useTLS {
+				return errors.New("--tls-insecure requires --tls")
+			}
+			// Load first so an existing `tunnels:` list (and any flag the user
+			// did not pass this time) survives re-running login.
+			c, err := config.LoadClient(*cfgPath)
+			if err != nil {
+				return err
+			}
+			c.ControlAddr = server
+			c.Token = token
+			flags := cmd.Flags()
+			if flags.Changed("default-domain") {
+				c.DefaultDomain = defaultDomain
+			}
+			if flags.Changed("tls") {
+				c.TLS = useTLS
+			}
+			if flags.Changed("tls-insecure") {
+				c.TLSInsecure = tlsInsecure
 			}
 			if err := config.SaveClient(*cfgPath, c); err != nil {
 				return err
@@ -129,6 +202,8 @@ func newLoginCmd(cfgPath *string) *cobra.Command {
 	cmd.Flags().StringVar(&server, "server", "", "control server address (host:port)")
 	cmd.Flags().StringVar(&token, "token", "", "authentication token")
 	cmd.Flags().StringVar(&defaultDomain, "default-domain", "", "default subdomain to request")
+	cmd.Flags().BoolVar(&useTLS, "tls", false, "dial the control port over TLS")
+	cmd.Flags().BoolVar(&tlsInsecure, "tls-insecure", false, "skip control certificate verification (self-signed certs; requires --tls)")
 	return cmd
 }
 
@@ -208,39 +283,116 @@ func newTCPCmd(cfgPath *string) *cobra.Command {
 	return cmd
 }
 
-// runTunnel connects, registers the tunnel, prints its public address, then
-// serves inbound streams until the process receives SIGINT/SIGTERM.
+// runTunnel connects, registers a single tunnel, prints its public address,
+// then serves inbound streams until the process receives SIGINT/SIGTERM. A
+// dropped control connection ends the command; `lotun serve` is the variant
+// that reconnects.
 func runTunnel(cmd *cobra.Command, cfg config.ClientConfig, req client.TunnelRequest) error {
+	ctx, stop := signalContext(cmd)
+	defer stop()
+
+	err := serveOnce(ctx, cmd.OutOrStdout(), cfg, []client.TunnelRequest{req})
+	if errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+// signalContext derives a context from the command that is cancelled on
+// SIGINT/SIGTERM.
+func signalContext(cmd *cobra.Command) (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
+}
+
+// serveOnce dials the control server, registers every request on that one
+// session, prints the public addresses, and serves inbound streams until ctx is
+// cancelled or the connection drops.
+func serveOnce(ctx context.Context, out io.Writer, cfg config.ClientConfig, reqs []client.TunnelRequest) error {
 	cl, err := dial(cfg)
 	if err != nil {
 		return err
 	}
 	defer cl.Close()
 
-	reg, err := cl.Register(req)
-	if err != nil {
-		return err
+	for _, req := range reqs {
+		reg, err := cl.Register(req)
+		if err != nil {
+			return err
+		}
+		printRegistered(out, req, reg)
 	}
+	fmt.Fprintln(out, "Forwarding traffic. Press Ctrl-C to stop.")
 
-	out := cmd.OutOrStdout()
+	return cl.Serve(ctx)
+}
+
+// printRegistered reports one established tunnel and its public address.
+func printRegistered(out io.Writer, req client.TunnelRequest, reg protocol.Registered) {
 	if req.Type == protocol.HTTP {
-		fmt.Fprintf(out, "Tunnel ready: %s\n", reg.PublicURL)
+		fmt.Fprintf(out, "Tunnel ready: %s -> localhost:%d\n", reg.PublicURL, req.LocalPort)
 	} else {
-		fmt.Fprintf(out, "Tunnel ready: %s:%d\n", reg.Host, reg.Port)
+		fmt.Fprintf(out, "Tunnel ready: %s:%d -> localhost:%d\n", reg.Host, reg.Port, req.LocalPort)
 	}
 	if reg.GeneratedPassword != "" {
 		fmt.Fprintf(out, "Generated password: %s\n", reg.GeneratedPassword)
 	}
-	fmt.Fprintln(out, "Forwarding traffic. Press Ctrl-C to stop.")
+}
 
-	ctx, stop := signal.NotifyContext(cmd.Context(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+// Reconnect backoff bounds for `lotun serve`.
+const (
+	minBackoff = time.Second
+	maxBackoff = 30 * time.Second
+)
 
-	err = cl.Serve(ctx)
-	if errors.Is(err, context.Canceled) {
-		return nil
+// serveWithRetry runs serveOnce, re-dialing and re-registering with capped
+// exponential backoff whenever the control connection drops, until ctx is
+// cancelled. A session that outlived maxBackoff is treated as healthy, so a
+// long-lived tunnel does not stay pinned at the slowest retry interval.
+func serveWithRetry(ctx context.Context, out io.Writer, cfg config.ClientConfig, reqs []client.TunnelRequest) error {
+	backoff := minBackoff
+	for {
+		start := time.Now()
+		err := serveOnce(ctx, out, cfg, reqs)
+		if ctx.Err() != nil {
+			return nil
+		}
+		if time.Since(start) > maxBackoff {
+			backoff = minBackoff
+		}
+		fmt.Fprintf(out, "Connection lost (%v); reconnecting in %v\n", err, backoff)
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
 	}
-	return err
+}
+
+func newServeCmd(cfgPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "serve",
+		Short: "Serve every tunnel declared in the client config, reconnecting on failure",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cfg, err := loadConnectedConfig(*cfgPath)
+			if err != nil {
+				return err
+			}
+			reqs, err := tunnelRequests(cfg.Tunnels)
+			if err != nil {
+				return err
+			}
+			ctx, stop := signalContext(cmd)
+			defer stop()
+			return serveWithRetry(ctx, cmd.OutOrStdout(), cfg, reqs)
+		},
+	}
 }
 
 func newClaimCmd(cfgPath *string) *cobra.Command {

@@ -286,6 +286,60 @@ func TestTCPPrivateAllowlist(t *testing.T) {
 	}
 }
 
+// TestMultipleTunnelsOverOneSession registers an HTTP and a TCP tunnel on a
+// single control session — what `lotun serve` does with a `tunnels:` list — and
+// proves both route independently over the one multiplexed connection.
+func TestMultipleTunnelsOverOneSession(t *testing.T) {
+	h := newHarness(t)
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "from http tunnel")
+	}))
+	t.Cleanup(upstream.Close)
+	echoLn := newEchoListener(t)
+
+	for _, name := range []string{"multi-web", "multi-db"} {
+		if err := h.cl.Claim(name); err != nil {
+			t.Fatalf("Claim(%s): %v", name, err)
+		}
+	}
+
+	web, err := h.cl.Register(client.TunnelRequest{
+		Type:      protocol.HTTP,
+		Domain:    "multi-web",
+		LocalPort: portOf(t, upstream.Listener.Addr().String()),
+	})
+	if err != nil {
+		t.Fatalf("Register(http): %v", err)
+	}
+	db, err := h.cl.Register(client.TunnelRequest{
+		Type:      protocol.TCP,
+		Domain:    "multi-db",
+		LocalPort: portOf(t, echoLn.Addr().String()),
+	})
+	if err != nil {
+		t.Fatalf("Register(tcp): %v", err)
+	}
+
+	serve(t, h.cl)
+
+	if body := httpGet(t, h.httpAddr, web.Host, ""); body != "from http tunnel" {
+		t.Fatalf("http body = %q, want %q", body, "from http tunnel")
+	}
+	if got := tcpExchange(t, db.Port, "ping"); got != "ping" {
+		t.Fatalf("tcp echo = %q, want %q", got, "ping")
+	}
+
+	// Both tunnels belong to the one session, so both are listed.
+	tunnels, err := h.cl.ListTunnels()
+	if err != nil {
+		t.Fatalf("ListTunnels: %v", err)
+	}
+	if len(tunnels) != 2 {
+		t.Fatalf("len(tunnels) = %d, want 2", len(tunnels))
+	}
+}
+
 // TestTCPTunnelHalfClose proves a client that shuts down its write side after
 // sending — `printf ping | nc host port`, and every tool that does the same —
 // still receives the reply. Splicing used to close the whole connection when

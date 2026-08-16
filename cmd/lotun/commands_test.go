@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/gabrielrocha/lotun/internal/config"
+	"github.com/gabrielrocha/lotun/internal/protocol"
+)
 
 func TestTCPPrivateRequiresAllowIP(t *testing.T) {
 	err := validateTCPFlags( /*private=*/ true /*allowIPs=*/, nil /*password=*/, "")
@@ -24,6 +29,42 @@ func TestTCPPrivateWithAllowIPOK(t *testing.T) {
 func TestTCPPublicOK(t *testing.T) {
 	if err := validateTCPFlags(false, nil, ""); err != nil {
 		t.Fatalf("public tcp must succeed, got %v", err)
+	}
+}
+
+func TestTunnelRequestsConvertsEveryEntry(t *testing.T) {
+	got, err := tunnelRequests([]config.TunnelConfig{
+		{Type: "http", Domain: "api", Port: 3000},
+		{Type: "TCP", Domain: "db", Port: 5432, RemotePort: 25432, Private: true, AllowIPs: []string{"1.2.3.4"}},
+	})
+	if err != nil {
+		t.Fatalf("tunnelRequests: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len(got) = %d, want 2", len(got))
+	}
+	if got[0].Type != protocol.HTTP || got[0].Domain != "api" || got[0].LocalPort != 3000 {
+		t.Fatalf("http entry mismatch: %#v", got[0])
+	}
+	// The type is case-insensitive and the tcp-only fields carry through.
+	if got[1].Type != protocol.TCP || got[1].RemotePort != 25432 || len(got[1].AllowIPs) != 1 {
+		t.Fatalf("tcp entry mismatch: %#v", got[1])
+	}
+}
+
+func TestTunnelRequestsRejectsBadEntries(t *testing.T) {
+	cases := map[string][]config.TunnelConfig{
+		"empty list":                    nil,
+		"unknown type":                  {{Type: "udp", Port: 80}},
+		"missing port":                  {{Type: "http"}},
+		"port out of range":             {{Type: "http", Port: 70000}},
+		"private tcp without allow_ips": {{Type: "tcp", Port: 5432, Private: true}},
+		"password on tcp":               {{Type: "tcp", Port: 5432, Password: "pw"}},
+	}
+	for name, tunnels := range cases {
+		if _, err := tunnelRequests(tunnels); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
 	}
 }
 
