@@ -118,8 +118,15 @@ writes a **`StreamHeader`** first — itself a length-prefixed JSON frame:
 | `localPort` | int | The local port the client should dial. |
 
 After the header, the stream carries raw bytes. The client reads the header,
-dials `127.0.0.1:<localPort>`, and splices bytes bidirectionally
-(`io.Copy` both ways) until either side closes.
+dials `127.0.0.1:<localPort>`, and splices bytes in both directions until
+**both** directions are done (`internal/netutil.Splice`).
+
+Each direction is copied independently, and reaching EOF on one direction
+**half-closes** the other side's write end rather than closing the whole
+connection: `CloseWrite` on a `*net.TCPConn`, `Close` on a yamux stream (which
+sends a FIN and leaves reads alive). This is what keeps request/response
+patterns working when a peer shuts down its write side after sending —
+`printf ping | nc host port` still receives the reply.
 
 - **HTTP** — the server's reverse-proxy transport opens a stream per request;
   private tunnels enforce Basic Auth (user `lotun`) before the stream is opened.

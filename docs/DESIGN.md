@@ -62,7 +62,11 @@ game client ──TCP──────────────▶ lotund :25565
 ### Data flow
 
 - **HTTP:** inbound request → look up tunnel by `Host` subdomain → if private, enforce Basic Auth → `httputil.ReverseProxy` whose `Transport.DialContext` opens a fresh yamux stream to the owning client → client dials `localhost:port`, proxies, response streams back.
-- **TCP:** inbound conn on the tunnel's public port → if private, check source IP against allowlist → open yamux stream to client → bidirectional `io.Copy` splice → client dials `localhost:port`.
+- **TCP:** inbound conn on the tunnel's public port → if private, check source IP against allowlist → open yamux stream to client → bidirectional splice (`internal/netutil.Splice`) → client dials `localhost:port`.
+
+Splicing half-closes rather than closes when one direction hits EOF, and waits
+for both directions, so a peer that shuts its write side after sending still
+receives the reply. See [protocol.md](protocol.md#data-streams).
 
 ### Control protocol (over a dedicated yamux control stream)
 
@@ -117,8 +121,10 @@ lotun/
   internal/store/          # claims persistence (JSON file + interface)
   internal/config/         # viper-backed client + server config
   internal/names/          # random memorable name generator (adjective+animal wordlists)
+  internal/netutil/        # Splice: half-close-aware bidirectional copy (client + server)
+  internal/e2e/            # in-process end-to-end tests (real server + real client)
   README.md                # architecture, install, self-host (Caddyfile example), usage
-  docs/                    # protocol.md, deploy.md
+  docs/                    # guide.md, protocol.md, deploy.md
 ```
 
 Key deps: `github.com/hashicorp/yamux`, `github.com/spf13/cobra`, `github.com/spf13/viper`. Stdlib for the rest (`net`, `net/http`, `httputil`, `crypto/tls`, `crypto/subtle`, `crypto/rand`, `io`, `encoding/json`).
