@@ -2,8 +2,9 @@ package server
 
 import (
 	"fmt"
-	"io"
 	"net"
+
+	"github.com/gabrielrocha/lotun/internal/netutil"
 )
 
 // ponytail: one net.Listener per tcp tunnel — simplest correct model; a shared SNI/port-mux only if listener count ever matters.
@@ -53,16 +54,5 @@ func spliceTCP(tn *Tunnel, conn net.Conn) {
 	}
 	defer stream.Close()
 
-	done := make(chan struct{}, 2)
-	go func() {
-		io.Copy(stream, conn)
-		stream.Close()
-		done <- struct{}{}
-	}()
-	go func() {
-		io.Copy(conn, stream)
-		conn.Close()
-		done <- struct{}{}
-	}()
-	<-done
+	netutil.Splice(conn, stream)
 }

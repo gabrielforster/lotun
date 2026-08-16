@@ -16,11 +16,11 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 	"sync"
 
+	"github.com/gabrielrocha/lotun/internal/netutil"
 	"github.com/gabrielrocha/lotun/internal/protocol"
 	"github.com/hashicorp/yamux"
 )
@@ -231,18 +231,7 @@ func handleStream(stream net.Conn) {
 	}
 	defer local.Close()
 
-	done := make(chan struct{}, 2)
-	go func() {
-		io.Copy(local, stream)
-		local.Close()
-		done <- struct{}{}
-	}()
-	go func() {
-		io.Copy(stream, local)
-		stream.Close()
-		done <- struct{}{}
-	}()
-	<-done
+	netutil.Splice(local, stream)
 }
 
 // Close tears down the control stream, session, and underlying connection.

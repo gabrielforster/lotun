@@ -286,6 +286,52 @@ func TestTCPPrivateAllowlist(t *testing.T) {
 	}
 }
 
+// TestTCPTunnelHalfClose proves a client that shuts down its write side after
+// sending — `printf ping | nc host port`, and every tool that does the same —
+// still receives the reply. Splicing used to close the whole connection when
+// one direction hit EOF, which silently dropped the response.
+func TestTCPTunnelHalfClose(t *testing.T) {
+	h := newHarness(t)
+
+	echoLn := newEchoListener(t)
+	if err := h.cl.Claim("halfclose-app"); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	reg, err := h.cl.Register(client.TunnelRequest{
+		Type:      protocol.TCP,
+		Domain:    "halfclose-app",
+		LocalPort: portOf(t, echoLn.Addr().String()),
+	})
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	serve(t, h.cl)
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(reg.Port)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial tcp :%d: %v", reg.Port, err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	// Signal end-of-request, exactly as a shell pipeline's EOF does.
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite: %v", err)
+	}
+
+	got, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("read after half-close: %v", err)
+	}
+	if string(got) != "ping" {
+		t.Fatalf("echo after half-close = %q, want %q", got, "ping")
+	}
+}
+
 // newEchoListener starts a loopback TCP listener that echoes back everything it
 // reads, on its own goroutine, torn down on cleanup.
 func newEchoListener(t *testing.T) net.Listener {
