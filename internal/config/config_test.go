@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -35,7 +36,17 @@ func TestLoadServerFileThenEnvOverride(t *testing.T) {
 
 func TestSaveThenLoadClientRoundTrip(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "cfg", "config.yaml")
-	want := ClientConfig{ControlAddr: "127.0.0.1:7000", Token: "dev", DefaultDomain: "myapp"}
+	want := ClientConfig{
+		ControlAddr:   "127.0.0.1:7000",
+		Token:         "dev",
+		DefaultDomain: "myapp",
+		TLS:           true,
+		TLSInsecure:   true,
+		Tunnels: []TunnelConfig{
+			{Type: "http", Domain: "api", Port: 3000, Private: true, Password: "pw"},
+			{Type: "tcp", Domain: "db", Port: 5432, RemotePort: 25432, Private: true, AllowIPs: []string{"1.2.3.4"}},
+		},
+	}
 	if err := SaveClient(p, want); err != nil {
 		t.Fatal(err)
 	}
@@ -43,8 +54,24 @@ func TestSaveThenLoadClientRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
-		t.Fatalf("round trip mismatch: %#v != %#v", got, want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("round trip mismatch:\n got %#v\nwant %#v", got, want)
+	}
+}
+
+// The client config holds the auth token and tunnel passwords, so it must not
+// be group/world readable.
+func TestSaveClientPermissions(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "cfg", "config.yaml")
+	if err := SaveClient(p, ClientConfig{ControlAddr: "a:1", Token: "dev"}); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := fi.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("config perms = %o, want 600", perm)
 	}
 }
 

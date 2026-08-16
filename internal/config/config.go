@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/viper"
+	"go.yaml.in/yaml/v3"
 )
 
 // ServerConfig holds configuration for the lotund server.
@@ -24,11 +25,29 @@ type ServerConfig struct {
 	DataDir        string `mapstructure:"data_dir"` // default "./data"
 }
 
+// TunnelConfig declares one tunnel to expose. A list of these under `tunnels:`
+// is what `lotun serve` registers on a single control session.
+type TunnelConfig struct {
+	Type       string   `mapstructure:"type" yaml:"type"`                         // "http" or "tcp"
+	Domain     string   `mapstructure:"domain" yaml:"domain,omitempty"`           // claimed subdomain; empty => server assigns
+	Port       int      `mapstructure:"port" yaml:"port"`                         // local port to forward to
+	RemotePort int      `mapstructure:"remote_port" yaml:"remote_port,omitempty"` // tcp only; 0 => server assigns
+	Private    bool     `mapstructure:"private" yaml:"private,omitempty"`
+	Password   string   `mapstructure:"password" yaml:"password,omitempty"`   // http only
+	AllowIPs   []string `mapstructure:"allow_ips" yaml:"allow_ips,omitempty"` // tcp only
+}
+
 // ClientConfig holds configuration for the lotun client.
 type ClientConfig struct {
-	ControlAddr   string `mapstructure:"control_addr"`
-	Token         string `mapstructure:"token"`
-	DefaultDomain string `mapstructure:"default_domain"`
+	ControlAddr   string `mapstructure:"control_addr" yaml:"control_addr"`
+	Token         string `mapstructure:"token" yaml:"token"`
+	DefaultDomain string `mapstructure:"default_domain" yaml:"default_domain,omitempty"`
+	// TLS dials the control port over TLS. TLSInsecure additionally skips
+	// certificate verification, for a self-signed control cert.
+	TLS         bool `mapstructure:"tls" yaml:"tls,omitempty"`
+	TLSInsecure bool `mapstructure:"tls_insecure" yaml:"tls_insecure,omitempty"`
+	// Tunnels is the declarative tunnel set served by `lotun serve`.
+	Tunnels []TunnelConfig `mapstructure:"tunnels" yaml:"tunnels,omitempty"`
 }
 
 // newViper builds a fresh viper instance with the given env prefix and, if a
@@ -89,14 +108,16 @@ func LoadClient(path string) (ClientConfig, error) {
 	return c, nil
 }
 
-// SaveClient writes c to path as yaml (used by `lotun login`), creating parent dirs.
+// SaveClient writes c to path as yaml (used by `lotun login`), creating parent
+// dirs. The file carries the auth token and any tunnel passwords, so it is
+// written 0600 inside a 0700 directory.
 func SaveClient(path string, c ClientConfig) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	v := viper.New()
-	v.Set("control_addr", c.ControlAddr)
-	v.Set("token", c.Token)
-	v.Set("default_domain", c.DefaultDomain)
-	return v.WriteConfigAs(path)
+	b, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0o600)
 }
